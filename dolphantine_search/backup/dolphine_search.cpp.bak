@@ -1,0 +1,435 @@
+#include <iostream>
+#include <fstream>
+#include <map>
+#include <vector>
+#include <utility> // make_pair
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+// An IFDEF complier switch
+// to include the correct GMP header.
+// The correct mkl header depends on the
+// target (i.e. desktop linux or HPC cluster with intel MKL)
+#ifdef __GNUC__
+    #include <gmp.h>
+#else
+    #include "mkl_gmp.h"
+#endif
+#include <mpi.h>
+
+#define DEBUG 1
+
+using namespace std;
+
+// This code solves a problem for T.D. Browning et al.
+// long int values are good for up-to ~2billion on typical architectures.
+
+void test_ab (long int coeff_a, long int coeff_b, long int h_height, long int l_height, map<string, vector<struct uv_long*> > mapType, int rank, char * logpath);
+string format_solution (long int x, long int y, long int u, long int v);
+long int get_max (long int x, long int y, long int u, long int v);
+int process_range (
+    long long int h_height, 
+    long long int l_height, 
+    int rank, 
+    int numproc,
+    int coeff_a,
+    int coeff_b,
+    int coeff_u,
+    int coeff_v, 
+    long int chunksize,
+    char * logpath);
+double diffclock(clock_t clock1,clock_t clock2);
+
+
+struct uv_long {
+    long int u;
+    long int v;
+};
+
+void usage (string progname) {
+    cout << "need more command line arguments" << endl;
+    cout << "example: " << progname << " 2 3 -5 -7 1000 0 2500000 /path/for/logfiles" << endl;
+}
+
+int main(int argc, char *argv[]) {
+    int rank, numproc;
+
+    if (argc != 9) {
+        usage(argv[0]); 
+        return 1;
+    }
+
+    MPI_Init ( &argc, &argv );
+    MPI_Comm_rank (MPI_COMM_WORLD, &rank);
+    MPI_Comm_size (MPI_COMM_WORLD, &numproc);
+    //MPI::Init ( argc, argv );
+    //int rank = MPI::COMM_WORLD.Get_rank ( ) ;
+    //int numproc = MPI::COMM_WORLD.Get_size ( );
+
+    int coeff_a = atoi(argv[1]);
+    int coeff_b = atoi(argv[2]);
+    int coeff_u = atoi(argv[3]);
+    int coeff_v = atoi(argv[4]);
+
+    long long int h_height = atoi(argv[5]);
+    long long int l_height = atoi(argv[6]);
+
+    long int chunk_size = atoi(argv[7]);
+
+    char * logpath = argv[8];
+
+    process_range(h_height, l_height, rank, numproc, coeff_a, coeff_b, coeff_u, coeff_v, chunk_size, logpath);
+
+    MPI_Finalize ( );
+    //MPI::Finalize ( );
+
+    return 0;
+}
+
+int process_range (
+    long long int h_height, 
+    long long int l_height, 
+    int rank, 
+    int numproc,
+    int coeff_a,
+    int coeff_b,
+    int coeff_u,
+    int coeff_v, 
+    long int chunksize,
+    char * logpath) {
+ 
+    int current_u;
+    int current_v;
+    mpz_t uv_sum, v_sum;
+    char * tmpkey;
+    string tmpkeystr;
+    //mpz_class uv_sum;
+
+    long int count = 0;
+    float total_tests = pow((h_height - l_height + 0.5)*2,2)/numproc;
+
+    typedef map<string, vector<struct uv_long*> > mapType;
+    map<string, vector<struct uv_long*> >::iterator it;
+    mapType myMap;
+
+    uv_long *tmpuv = new uv_long;
+    vector <struct uv_long*> uvVec;
+
+    //long int phypz = sysconf(_SC_PHYS_PAGES);
+    //long int psize = sysconf(_SC_PAGE_SIZE);
+
+    mpz_init(uv_sum);
+    mpz_init(v_sum);
+    //clock_t begin=clock();
+
+    if (DEBUG) 
+        cout << "process rank: " << rank << " total quantity of processes: " << numproc << endl;
+        //cout << "machine memory: pages = " << phypz << " size = " << psize << endl;
+        cout << "estimated tests: " << total_tests << endl;
+        
+
+    current_u = -h_height + rank;
+    while (current_u <= h_height) {
+        current_v = -h_height;
+        //cout << "u: " << current_u << ", " << current_v << endl;
+        while (current_v <= h_height) {
+            
+    /*typedef map<string, vector<struct uv_long*> > mapType;
+    map<string, vector<struct uv_long*> >::iterator it;
+    mapType myMap;
+
+    uv_long *tmpuv = new uv_long;
+    vector <struct uv_long*> uvVec;*/
+
+
+
+
+
+            //cout << rank << " u,v: " << current_u << ", " << current_v;
+            tmpuv = new uv_long;
+            tmpuv->u = current_u;
+            tmpuv->v = current_v;
+
+            //uv_sum = coeff_u*pow(current_u,3) + coeff_v*pow(current_v,3);
+            mpz_set_si(v_sum, current_v);
+            mpz_pow_ui(v_sum, v_sum, 3);
+            mpz_mul_si(v_sum, v_sum, coeff_v);
+
+            mpz_set_si(uv_sum, current_u);
+            mpz_pow_ui(uv_sum, uv_sum, 3);
+            mpz_mul_si(uv_sum, uv_sum, coeff_u);
+
+            mpz_add(uv_sum, uv_sum, v_sum);
+            //gmp_printf("%Zd %Zd\n", uv_sum, v_sum);
+            tmpkey = mpz_get_str(NULL, 10, uv_sum);
+
+            //printf("tmpkey = %s\n", tmpkey);
+
+            tmpkeystr = tmpkey;
+           // cout << " key = " << tmpkey << endl;
+            myMap[tmpkeystr].push_back(tmpuv);
+
+            //myMap[uv_sum.get_str(10)].push_back(tmpuv);
+            count++;
+
+            if (count % chunksize == 0) {
+                test_ab(coeff_a, coeff_b, h_height, l_height, myMap, rank, logpath);
+                if (DEBUG)
+                    cout << "proc: " << rank << " done: " << count << " ("<< (count/total_tests)*100 << "%)" << endl;
+
+                cout << "Size of myMap: " << myMap.size() << '\n';
+
+
+                for ( it = myMap.begin(); it != myMap.end(); ++it)     {
+                    vector <struct uv_long*> tmp_vec = it->second;
+                    //cout << "vec size = " << tmp_vec.size() << endl;
+
+                    vector <struct uv_long*>::iterator vit;
+                    for (vit = tmp_vec.begin(); vit < tmp_vec.end(); ++vit) {
+                        //cout << "\t(" << (*vit)->u << ", " << (*vit)->v << ")" << endl;
+                        delete *vit;
+                    }
+                    tmp_vec.clear();
+                    //for (unsigned i = 0; i < tmp_vec.size(); i++) {
+                    //    cout << "\t(" << tmp_vec[i]->u << ", " << tmp_vec[i]->v << ")" << endl;
+                    //}
+
+                    //vector <struct uv_long*>::iterator vit;
+                    //for ( vit = tmp_vec.begin(); vit != tmp_vec.end(); ++vit)     {
+                    //    cout << "vec value = " << vit << endl;
+                    //}
+                }
+                /*for ( it = myMap.begin(); it != myMap.end(); ++it)     {
+                    vector <struct uv_long*> tmp_vec = it->second;
+                    vector <struct uv_long*>::iterator vit;
+
+                    for ( vit = tmp_vec.begin(); vit != tmp_vec.end(); ++vit)     {
+                        //delete vit;
+                        //vit = vit.erase(vit);
+                    }
+                
+                    delete tmp_vec;
+
+                    it->second.clear();
+                    //it->second.~vector();
+                    //myMap.erease(it->second);
+
+                }*/
+    //    cout << "Size of myMap: " << myMap.size() << '\n';
+                myMap.clear();
+    //    cout << "Size of myMap: " << myMap.size() << '\n';
+                
+            }
+
+            current_v = current_v + 1;
+            if (current_v > - l_height && current_v < l_height) {
+                current_v = l_height;
+            }
+        }
+
+        current_u = current_u + numproc;
+        if (current_u > - l_height && current_u < l_height) {
+            current_u = l_height + rank;
+        }
+    }
+    test_ab(coeff_a, coeff_b, h_height, l_height, myMap, rank, logpath);
+
+    mpz_clear(uv_sum);
+    if (DEBUG) 
+        cout << "proc: " << rank << " completed (100%) count = " << count << endl;
+
+    //phypz = sysconf(_SC_PHYS_PAGES);
+    //psize = sysconf(_SC_PAGE_SIZE);
+    //cout << "pages = " << phypz << " size = " << psize << endl;
+
+
+    /*myMap.insert(pair<char, int>('b', 2));
+    myMap.insert(pair<char, int>('c', 3));
+    myMap.insert(mapType::value_type('d', 4)); // all standard containers provide this typedef
+    myMap.insert(make_pair('e', 5));           // can also use the utility function make_pair
+
+*/
+    // erase the first element using the erase function
+    //mapType::iterator iter = myMap.begin();
+    //myMap.erase(iter);
+
+    // output the size of the map
+    //if (DEBUG) 
+    //    cout << "Size of myMap: " << myMap.size() << '\n';
+
+    //cout << "Enter a key to search for: ";
+    ////char c;
+    //long int c;
+    //cin >> c;
+
+    //// find will return an iterator to the matching element if it is found
+    //// or to the end of the map if the key is not found
+    //it = myMap.find(c);
+    //if( it != myMap.end() ) 
+    //    cout << "Value is: " << it->second << '\n';
+    //else
+    //    cout << "Key is not in myMap" << '\n';
+
+    /*for ( it = myMap.begin(); it != myMap.end(); it++)     {
+        uvVec = it->second;
+        //cout << "collision" << endl;
+        cout << it->first << " => \n";
+        for (unsigned i = 0; i < uvVec.size(); i++) {
+            cout << "\t(" << uvVec[i]->u << ", " << uvVec[i]->v << ")" << endl;
+        }
+       // cout << uv_sum << " => (" << tmpuv->u << ", " << tmpuv->v << ")" << endl;
+        //cout << (*it).first << " => (" << (*it).second->u << ", " << (*it).second->v << ")" << endl;
+    }*/
+
+    //if ( myMap[12000] == NULL) {
+    //    cout << "can't find key\n";
+    //}
+
+    // clear the entries in the map
+    myMap.clear();
+    return 0;
+}
+
+void test_ab (long int coeff_a, long int coeff_b, long int h_height, long int l_height, map<string, vector<struct uv_long*> > myMap, int rank, char * logpath) {
+    int current_a;
+    int current_b;
+
+    //mpz_class ab_sum;
+    mpz_t ab_sum, b_sum;
+    char * tmpkey;
+    string tmpkeystr;
+
+    vector <struct uv_long*> uvVec;
+    map<string, vector<struct uv_long*> >::iterator it;
+
+    ofstream logfile; 
+
+    char logfilename[50];
+    sprintf(logfilename, "%s/log_%03d.log", logpath, rank);
+    logfile.open (logfilename, ios::out | ios::app);
+
+    //if (DEBUG) {
+    //    cout << "testing ab\n";
+    //    cout << "Size of myMap: " << myMap.size() << '\n';
+    //}
+    
+    mpz_init(ab_sum);
+    mpz_init(b_sum);
+
+
+    current_a = -h_height;
+    while (current_a <= h_height) {
+        current_b = -h_height;
+        while (current_b <= h_height) {
+            //cout << "a,b: " << current_a << ", " << current_b;
+            //ab_sum = coeff_a*pow(current_a,3) + coeff_b*pow(current_b,3);
+            mpz_set_si(b_sum, current_b);
+            mpz_pow_ui(b_sum, b_sum, 3);
+            mpz_mul_si(b_sum, b_sum, coeff_b);
+
+            mpz_set_si(ab_sum, current_a);
+            mpz_pow_ui(ab_sum, ab_sum, 3);
+            mpz_mul_si(ab_sum, ab_sum, coeff_a);
+
+            mpz_add(ab_sum, ab_sum, b_sum);
+            tmpkey = mpz_get_str(NULL, 10, ab_sum);
+
+            //it = myMap.find( ab_sum.get_str(10) );
+            tmpkeystr = tmpkey;
+            //cout << "key = " << tmpkeystr << endl;
+            it = myMap.find( tmpkeystr );
+            if ( it != myMap.end()) {
+                uvVec = it->second;
+               // cout << current_a << " " << current_b << ",  ";
+               // cout << it->first << " => ";
+               // cout << uvVec.size() << " solutions ";
+                for (unsigned i = 0; i < uvVec.size(); i++) {
+              //      cout << "\t(" << uvVec[i]->u << ", " << uvVec[i]->v << ")" << endl;
+                    logfile << format_solution (current_a, current_b, uvVec[i]->u, uvVec[i]->v);
+                }
+            }
+            //if (DEBUG) 
+            //    cout << "b: " << current_a << ", " << current_b << endl;
+            current_b = current_b + 1;
+            if (current_b > - l_height && current_b < l_height) {
+                current_b = l_height;
+            }
+        }
+        current_a = current_a + 1;
+        if (current_a > - l_height && current_a < l_height) {
+            current_a = l_height;
+        }
+    }
+    logfile.close();
+}
+
+string format_solution (long int a, long int b, long int u, long int v) {
+    char formatted_out[100];
+    string tmpstr;
+    sprintf(formatted_out, " (%9ld) %9ld %9ld %9ld %9ld\n", get_max(a, b, u, v), a, b, u, v);
+    tmpstr = formatted_out;
+    return tmpstr;
+    
+    //return str( format(" (%9ld) %9ld %9ld %9ld %9ld\n") 
+    //    % get_max(a, b, u, v)
+    //    % a
+    //    % b
+    //    % u
+    //    % v);
+     
+    //char * tmpstr;    
+    //sprintf(tmpstr, " (%9ld) %9ld %9ld %9ld %9ld\n", get_max(a, b, u, v), a, b, u, v);
+    //return tmpstr;
+}
+
+long int get_max (long int a, long int b, long int u, long int v) {
+    long int max = a;
+    if (b > max)
+        max = b;
+    if (u > max)
+        max = u;
+    if (v > max)
+        max = v;
+    return max;
+}
+
+double diffclock(clock_t clock1,clock_t clock2)
+{
+    double diffticks=clock1-clock2;
+    double diffms=(diffticks*1000)/CLOCKS_PER_SEC;
+    return diffms;
+} 
+
+
+/*
+class A
+{
+
+    public:
+
+        A(){ia=1;}
+        ~A(){ std::cout << "~A()" << std::endl; }
+
+    private:
+
+        int ia;
+};
+
+int main()
+{
+    vector<A*> v;
+
+    A* a = new A;
+    v.push_back(a);
+
+    vector<A*>::iterator it;
+    for (it=v.begin(); it!=v.end(); ++it)
+    {
+        delete (*it); // comment out and destructor is not called
+    }
+
+    v.clear();
+
+    return 0;
+}
+*/
